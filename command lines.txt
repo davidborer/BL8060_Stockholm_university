@@ -1,0 +1,52 @@
+login: 
+group4@vpsmbw-p-srv04.mbw.su.se with given password
+
+hisat2-build S288C_reference_plus_2u.fa yeast
+
+hisat2 -q -x /home/PC/SNP_calling/first_part/reference/yeast --rg ID:ym-WT --rg SM:ym-WT --rg PL:ILLUMINA --rg LB:ym-WT -U ym-WT_sub.fastq -S ym–WT.sam 
+ 
+hisat2 -q -x /home/PC/SNP_calling/first_part/reference/yeast --rg ID:ym-7 --rg SM:ym-7 --rg PL:ILLUMINA --rg LB:ym-7 -U ym-7_sub.fastq -S ym-7.sam
+
+extraction mapped reads:
+
+samtools view -F 4 -bS -h ym-WT.sam > ym-WT_mapped.bam
+samtools view -F 4 -bS -h ym-7.sam > ym-7_mapped.bam
+
+map and mark duplicates
+
+java -jar $PICARD SortSam INPUT=/home/PC/SNP_calling/first_part/ym-WT_mapped.bam OUTPUT=ym-WT_sorted.bam SORT_ORDER=coordinate
+
+java -jar $PICARD MarkDuplicates INPUT=ym-WT_sorted.bam OUTPUT=ym-WT_sorted_and_marked_file.bam METRICS_FILE=ym-WT_metrics.txt VALIDATION_STRINGENCY=LENIENT REMOVE_DUPLICATES=True CREATE_INDEX=True
+
+create appropriate dict:
+java -jar picard.jar CreateSequenceDictionary R=S288C_reference_plus_2u.fa O=S288C_reference_plus_2u.dict
+samtools faidx S288C_reference_plus_2u.fa
+
+Realignement and SNP/indel calling
+
+GATK=/home/PC/SNP_calling/first_part/software/GenomeAnalysisTK.jar
+java -jar $GATK  -T RealignerTargetCreator -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa -I ym-WT_sorted_and_marked_file.bam   -o ym-WT_target_intervals.list -U ALLOW_N_CIGAR_READS
+
+java -jar $GATK  -T IndelRealigner -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa  -I ym-WT_sorted_and_marked_file.bam -targetIntervals ym-WT_target_intervals.list -o ym-WT_gatk_realigned_reads.bam -U ALLOW_N_CIGAR_READS
+
+java -jar $GATK  -T HaplotypeCaller -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa -I ym-WT_gatk_realigned_reads.bam -o ym-WT_raw_variants.vcf -U ALLOW_N_CIGAR_READS
+
+java -jar $GATK  -T SelectVariants -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa -V ym-WT_raw_variants.vcf -selectType SNP -o ym-WT_raw_snps.vcf -U ALLOW_N_CIGAR_READS
+
+java -jar $GATK  -T SelectVariants -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa -V ym-WT_raw_variants.vcf -selectType INDEL -o ym-WT_raw_indels.vcf -U ALLOW_N_CIGAR_READS
+
+java -jar $GATK  -T VariantFiltration -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa -V ym-WT_raw_snps.vcf --filterExpression 'QD < 2.0 || FS > 60.0 || MQ < 40.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0 || SOR > 4.0' --filterName "basic_snp_filter" -o ym-WT_filtered_snps.vcf -U ALLOW_N_CIGAR_READS
+
+java -jar $GATK  -T VariantFiltration -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa -V ym-WT_raw_indels.vcf --filterExpression 'QD < 2.0 || FS > 200.0 || ReadPosRankSum < -20.0 || SOR > 10.0' --filterName "basic_indel_filter" -o ym-WT_filtered_indels.vcf -U ALLOW_N_CIGAR_READS
+
+java -jar $GATK  -T BaseRecalibrator -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa -I ym-WT_gatk_realigned_reads.bam -knownSites ym-WT_filtered_snps.vcf -knownSites ym-WT_filtered_indels.vcf -o ym-WT_recal_data.table -log ym-WT.baserecalibrator.log -U ALLOW_N_CIGAR_READS
+
+java -jar $GATK  -T PrintReads -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa -I ym-WT_gatk_realigned_reads.bam -BQSR ym-WT_recal_data.table -o ym-WT_recal_reads.bam -U ALLOW_N_CIGAR_READS
+
+java -jar $GATK  -T HaplotypeCaller -R /home/PC/SNP_calling/first_part/reference/S288C_reference_plus_2u.fa -I ym-WT_recal_reads.bam -o ym-WT_variants_recal.vcf -U ALLOW_N_CIGAR_READS
+
+compare parental mutant:
+
+vcftools --vcf mutant_variants_recal.vcf --diff control1_variants_recal.vcf --diff-site --out compared
+
+
